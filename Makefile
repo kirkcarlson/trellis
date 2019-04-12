@@ -6,3 +6,6 @@ trellis.bin : src/trellis.ino
 flash : trellis.bin
 	particle flash trellis1 trellis.bin
 
+print : src/trellis.ino
+	vim -c 'hardcopy > output.ps' -c quit src/trellis.ino && ps2pdf output.ps >output.pdf
+

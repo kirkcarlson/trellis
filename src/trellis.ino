@@ -9,18 +9,25 @@
 expand on the basic MultiTrellis.
 
 /add copyright block from similar code.
-add optional Particle.io communications
+/add optional Particle.io communications
+test optional Particle.io communications
 add local only mode for Conway's life.
+test local only mode for Conway's life.
+fix problem with MQTT disconnecting when it shouldn't
 
 /add mode to send individual switch down and up
 /add mode to send individual switch down
 add mode to use switches to control local bit array
+add module for switches
+add module for lattice
 
-add command to request local bit array
+add command to get local bit array
+/add command to set local bit array
 add command to control individual light (color)
 add command to control light array (color, bitmap)
 add command to control lights array (array of colors )
 add command to control brightness ( brightness)
+/add command to generate next generation of life
 add command to request ping
 /add command to request key on and off
 /add command to request key on only
@@ -30,29 +37,20 @@ add message to send local bit array
 add message to send individual switch down
 add message to send individual switch up
 add message to send brightness
-add heartbeat message (ping response)
+/add heartbeat message (ping response)
 
 add message for external switch down (2,3,4,5,6,7)
 add message for external switch up
-
 */
-/* This example shows basic usage of the
-MultiTrellis object controlling an array of
-NeoTrellis boards
 
-As is this example shows use of two NeoTrellis boards
-connected together with the leftmost board having the
-default I2C address of 0x2E, and the rightmost board
-having the address of 0x2F (the A0 jumper is soldered)
-*/
 
 // **** LIBRARIES ****
 #include "Adafruit_NeoTrellis.h"
 #define PARTICLE_NO_ARDUINO_COMPATIBILITY 1
 #include <MQTT.h>
 #include "addresses.h"
-// from FastLED for definition of CRGB
 #include "pixeltypes.h"
+//                      from FastLED for definition of CRGB and others
 
 
 //**** HARDWARE DEFINES ****
@@ -64,48 +62,59 @@ having the address of 0x2F (the A0 jumper is soldered)
 #define BUTTON_D	D5
 #define WIFI_MANUAL	D6
 #define BUTTON_MANUAL	D7
+//#define LED_A		D7
+//#define LED_B		D7
+//#define LED_C		D7
+//#define LED_D		D7
 
 
 //**** DEFINES ****
 
-// KEEP_ALIVE is number of seconds without MQTT message
-#define KEEP_ALIVE 60
+#define X_DIM 16
+//                  number of columns of keys
+#define Y_DIM 16
+//                  number of rows of keys
+
+
+#define KEEP_ALIVE 120
+//                  number of seconds without MQTT message
+#define HEARTBEAT KEEP_ALIVE/4
+//                  number of seconds without MQTT message
+#define BROADCAST 5*60
+//                  number of seconds between broadcast update
 #define TIME unsigned long
+//                  TIME datatype, cause I forget
 
 
 // **** DEFINE MATRIX OF KEYS AND LEDS ****
 
-#define Y_DIM 16 //number of rows of key
-#define X_DIM 16 //number of columns of keys
 
 //create a matrix of trellis panels
-Adafruit_NeoTrellis t_array[Y_DIM/4][X_DIM/4] = {
-
-  {
+Adafruit_NeoTrellis t_array[ Y_DIM/4][ X_DIM/4] = {
+  { // row 0
     Adafruit_NeoTrellis(0x2E),
     Adafruit_NeoTrellis(0x2F),
     Adafruit_NeoTrellis(0x30),
     Adafruit_NeoTrellis(0x31)
   },
-  {
+  { // row 1
     Adafruit_NeoTrellis(0x32),
     Adafruit_NeoTrellis(0x33),
     Adafruit_NeoTrellis(0x34),
     Adafruit_NeoTrellis(0x35)
   },
-  {
+  { // row 2
     Adafruit_NeoTrellis(0x36),
     Adafruit_NeoTrellis(0x37),
     Adafruit_NeoTrellis(0x38),
     Adafruit_NeoTrellis(0x39)
   },
-  {
+  { // row 3
     Adafruit_NeoTrellis(0x3A),
     Adafruit_NeoTrellis(0x3B),
     Adafruit_NeoTrellis(0x3C),
     Adafruit_NeoTrellis(0x3D)
   }
-
 };
 
 //pass this matrix to the multitrellis object
@@ -183,9 +192,14 @@ ledModes ledMode = offMode; // LED display mode, see above
 keyModes keyMode = keyModeOnOff; // key mode, see above
 int ledDirection = 0; // 0..359 LED direction in degrees for selected modes
 CRGB ledColor = CRGB::White; // default color of individual LEDs
-int ledBrightness; // level of over all brightness desired 0..100 percent
+int ledBrightness; // level of over all brightness desired 0..255
+int ledKeypressBrightness; // level of the brightness for key presses 0..255
 int selectedGroup = 0; // currently selected group
 char loopTopic[ MAX_TOPIC_LENGTH + 1];
+bool matrixB [ X_DIM * Y_DIM];
+uint16_t matrixI [ Y_DIM];
+CRGB ledColors [X_DIM * Y_DIM];  //commanded colors are stored here
+                                 // the LED is given commanded color modified by ledBrightness
 
 MQTT mqttClient(mqttServer, 1883, KEEP_ALIVE, receiveMqttMessage);
 //bool mqttClient.publish( String topic, String payload);
@@ -274,11 +288,350 @@ uint32_t Wheel(byte WheelPos) {
 }
 
 
+void setBrightness( uint8_t bright) {
+    for (int y=0; y < Y_DIM; y++) {
+        for (int x=0; x < X_DIM; x++) {
+            //t_array[x][y]-> ... non pointer type
+            //seesaw_NeoPixel::setBrightness( bright); ... cant do without object
+            //t_array[x][y].seesaw_NeoPixel::setBrightness( bright); ...seesaw not a base of t_
+            //t_array[x][y].seesaw_NeoPixel::setBrightness( bright); .. some error
+            //t_array[x][y].pixels.setBrightness(NEO_TRELLIS_XY(x, y), ledBrightness); .. 2 params
+            //t_array[x][y].pixels.setBrightness( ledBrightness); .. compiles but no go
+        }
+    }
+}
+
+
+void showLeds () {
+    // show all LEDs using commanded color modified by ledBrightness
+    CRGB temp;
+
+    for (int i=0; i < X_DIM * Y_DIM; i++) {
+        temp = ledColors[ i];
+        if (ledBrightness) {
+            temp.r = (temp.r * ledBrightness) >> 8;
+            temp.g = (temp.g * ledBrightness) >> 8;
+            temp.b = (temp.b * ledBrightness) >> 8;
+        }
+        trellis.setPixelColor(i, temp);
+    }
+    trellis.show();
+}
+
+
+void loadMatrix ( ) {
+    CRGB temp = ledColor;
+    if (ledBrightness) {
+        temp.r = (temp.r * ledBrightness) >> 8;
+        temp.g = (temp.g * ledBrightness) >> 8;
+        temp.b = (temp.b * ledBrightness) >> 8;
+    }
+
+    for (int i=0; i < X_DIM * Y_DIM; i++) {
+        if (matrixB[i]) {
+            ledColors[i] = ledColor;
+            trellis.setPixelColor(i, (uint32_t) temp);
+        } else {
+            ledColors[i] = 0;
+            trellis.setPixelColor(i, (uint32_t) 0);
+        }
+        //Log.trace( " " + String (i) + " " + String( matrixB[i] ? 1 : 0));
+        //delay(20);
+    }
+        //delay(20);
+    //Log.trace( "showing loadMatrix");
+    trellis.show();
+}
+
+
+void arrBoolToArrInt ( bool arrB[], uint16_t arrI[]) {
+    // these are numbered to reflect the array, so 0 is highest bit of first member
+    // and 255 is lowest bit of last member
+    for (int i=0; i < Y_DIM; i++) {
+        int row = 0;
+        for (int j=0; j < X_DIM; j++) {
+            row = (row << 1) +  arrB[i * X_DIM + j] ? 1 : 0;
+        }
+        arrI[i] = row;
+    }
+}
+
+
+void arrBoolToLed ( bool arrB[]) {
+    // these are numbered to reflect the array, so 0 is highest bit of first member
+    // and 255 is lowest bit of last member
+    int ledNumber = 0;
+    for (int i = 0; i < Y_DIM; i++) {
+        for (int j = 0; j < X_DIM; j++) {
+            if (arrB[ ledNumber]) {
+                ledColors[ ledNumber] = ledColor;
+            } else {
+                ledColors[ ledNumber] = 0;
+            }
+            ledNumber++;
+        }
+    }
+}
+
+
+void arrIntToArrBool ( uint16_t arrI[], bool arrB[]) {
+    // these are numbered to reflect the array, so 0 is highest bit of first member
+    // and 255 is lowest bit of last member
+    int ledNumber = 0;
+    for (int i = 0; i < Y_DIM; i++) {
+        for (int j = 0; j < X_DIM; j++) {
+            if (arrI[i] & 1 << (X_DIM-j-1)) { // 15, 14, 13..1, 0
+               arrB[ ledNumber] = true;
+            } else {
+               arrB[ ledNumber] = false;
+            }
+            ledNumber++;
+        }
+    }
+}
+
+
+void allLedsOff ( bool arrB[]) {
+    // these are numbered to reflect the array, so 0 is highest bit of first member
+    // and 255 is lowest bit of last member
+    int ledNumber = 0;
+    for (int i = 0; i < Y_DIM; i++) {
+        for (int j = 0; j < X_DIM; j++) {
+            ledColors[ ledNumber] = 0;
+            ledNumber++;
+        }
+    }
+}
+
+
+void allLedsOn ( bool arrB[]) {
+    // these are numbered to reflect the array, so 0 is highest bit of first member
+    // and 255 is lowest bit of last member
+    int ledNumber = 0;
+    for (int i = 0; i < Y_DIM; i++) {
+        for (int j = 0; j < X_DIM; j++) {
+            ledColors[ ledNumber] = ledColor;
+            ledNumber++;
+        }
+    }
+}
+
+
+String arrIntToJsonString( uint16_t arr[] ) {
+    String output = "[";
+    String prefix = "";
+    for (int i=0; i < Y_DIM; i++) {
+        output = output + prefix + String (arr[i]);
+        prefix = ", ";
+    }
+    output = output + ']';
+    return output;
+}
+
+bool jsonToIntArray( String json, uint16_t arr[] ) { // a limiting length would be good
+/*
+  the array is assumed to be 16 16-bit unsigned integers
+  this is not quite right... it is true for the key and led binary arrays
+  but false for led color arrays ... a 1x256 array of 24-bit color values.
+  the context will know how many members are expected and the maximum value allowed.
+*/
+    int pos = 0;
+    int arrPos = 0;
+    int arrPosLimit = 16;
+    uint32_t number = 0;
+    uint32_t numberLimit = 0xFFFF;
+    char jchar = json.charAt(pos);
+    while ( jchar == ' ') { // skip whitespace
+        pos++;
+        jchar = json.charAt(pos);
+    }
+    //Log.trace( "jsonToInt char: " + String( jchar));
+    if ( jchar == '[') { // good start
+        do { // while not end of list of numbers
+            pos++;
+            jchar = json.charAt(pos);
+            //Log.trace( "jsonToInt char: " + String( jchar));
+            while ( jchar == ' ') { // skip whitespace
+                pos++;
+                jchar = json.charAt(pos);
+            };
+            if ( jchar >= '0' && jchar <= '9') { // start of number
+                //Log.trace( "jsonToInt char: " + String( jchar));
+                number = jchar - '0';
+                //Log.trace( "jsonToInt number: " + String( number));
+                pos++;
+                jchar = json.charAt(pos);
+                while ( jchar >= '0' && jchar <= '9') { // still in number
+                    //Log.trace( "jsonToInt char: " + String( jchar));
+                    number = 10 * number + jchar - '0';
+                    //Log.trace( "jsonToInt number: " + String( number));
+                    pos++;
+                    jchar = json.charAt(pos);
+                    if (number >  numberLimit) {
+                        return false; // number too big
+                    }
+                };
+                // end of number, character is not a digit
+                //Log.trace( "jsonToInt EoN char: " + String( jchar));
+                arr[arrPos] = number;
+                arrPos++;
+                if (arrPos >= arrPosLimit) {
+                    return true; // too many numbers in array
+                }
+                while ( jchar == ' ') { // skip whitespace
+                    pos++;
+                    jchar = json.charAt(pos);
+                }
+                if ( jchar == ']') {
+                    return true; // properly formatted integer array
+                }; // other chars fall through including ','
+            } else {
+                return false; // poorly formatted
+            };
+        } while ( jchar == ',');
+        if ( jchar == ']' ) {
+            return true;
+        } else {
+            return false; // poorly formatted
+        };
+    } else {
+        return false; // poorly formatted
+    }
+}
+
+
+String  arrToString ( uint16_t arr[] ) { // a limiting length would be good
+    int arrPos = 0;
+    int arrPosLimit = 16;
+    String arrString = "";
+    String prefix = "";
+
+    for (int i = 0; i < arrPosLimit; i++) {
+        //Log.trace( "arrToString number: " + String( arr[arrPos]));
+        arrString = arrString + prefix + String( arr[ arrPos], HEX);
+        prefix = ", ";
+        arrPos++;
+    }
+    return ( arrString);
+}
+
+
+void updateLedMatrix ( ) {
+    // turn LEDs on or off according to the bit map
+    // use the global ledColor
+    arrBoolToLed ( matrixB);
+    showLeds();
+}
+
+
+int neighborCount (bool grid[], int cell ) {
+    // grid is a 1xN grid
+    // cell is the number of the cell of interest
+    // This algorithm treats a boundary as dead
+
+    int r = cell / X_DIM; // row of interest. 0 is top,, Y_DIM-1 is bottom
+    int c = cell % X_DIM; // column of interest. 0 is left most, X_DIM-1 is rightmost
+
+// base
+int above = (r - 1) * X_DIM;
+int same = r * X_DIM;
+int below = (r + 1) * X_DIM;
+int left = c - 1;
+int center = c;
+int right = c + 1;
+bool notLeftCol = (c > 0);
+bool notRightCol = (c < X_DIM-1);
+bool notTopRow = (r > 0);
+bool notBottomRow = (r < Y_DIM-1);
+
+    int count = 0;
+
+    if ( notTopRow) {
+        if ( notLeftCol && grid[above + left]) {
+            count = count + 1;
+            //console.log("NW " + String(r) + "," + String(c));
+        }
+        if ( grid[above + center]) {
+            count = count + 1;
+            //console.log("N " + String(r) + "," + String(c));
+        }
+        if ( notRightCol && grid[above + right]) {
+            count = count + 1;
+            //console.log("NE " + String(r) + "," + String(c));
+        }
+    }
+
+    //same row
+    if ( notLeftCol && grid[same + left]) {
+        count = count + 1;
+        //console.log("W " + String(r) + "," + String(c));
+    }
+    if ( notRightCol && grid[same + right]) {
+        count = count + 1;
+        //console.log("E " + String(r) + "," + String(c));
+    }
+
+    if (notBottomRow) {
+        if ( notLeftCol && grid[below + left]) {
+            count = count + 1;
+            //console.log("SW " + String(r) + "," + String(c));
+        }
+        if ( grid[below + center]) {
+            count = count + 1;
+            //console.log("S " + String(r) + "," + String(c));
+        }
+        if ( notRightCol && grid[below + right]) {
+            count = count + 1;
+            //console.log("SE " + String(r) + "," + String(c));
+        }
+    }
+    return count;
+}
+
+
+void generation (bool currentGrid[]) {
+  bool nextGrid [Y_DIM * X_DIM];
+
+  for (int r=0; r < Y_DIM; r++) {
+    for (int c=0; c < X_DIM; c++) {
+      int cell = r * X_DIM + c;
+      int count = neighborCount( currentGrid, cell);
+      //Log.trace ("row:" + String(r) + " col:" + String(c) + " count:" + String(count));
+      if (currentGrid[ cell]) { //alive
+        if (count == 2 || count == 3) {
+           nextGrid[ cell] = true;
+        } else {
+           nextGrid[ cell] = false;
+        }
+      } else { // vacant
+        if ( count == 3) {
+           nextGrid[ cell] = true;
+        } else {
+           nextGrid[ cell] = false;
+        }
+      }
+    }
+  }
+  for (int r=0; r < Y_DIM; r++) {
+    for (int c=0; c < X_DIM; c++) {
+      int cell = r * X_DIM + c;
+      currentGrid [ cell] = nextGrid[ cell];
+    }
+  }
+} 
+
 void setKeyMode( keyModes mode) {
-    // probably has case specific things to do, but not for now.
-    // should need to turn off all LEDs almost always.
     if (mode < NUM_KEY_MODES) {
         keyMode = mode;
+    }
+    if (keyMode == keyModeLocalMatrix) {
+        Log.trace( "Setting keyMode to keyModeLocalMatrix");
+        arrIntToArrBool( matrixI, matrixB);
+        loadMatrix();
+        Log.trace( "Set keyMode to keyModeLocalMatrix");
+    } else {
+        allLedsOff( matrixB);
+        showLeds();
     }
 }
 
@@ -289,7 +642,7 @@ keyModes stringToKeyMode( String cmdString) {
             return (keyModes) i;
         };
     };
-    Log.error("stringToKeyMode: " + cmdstring);
+    Log.error("stringToKeyMode: " + cmdString);
     return (keyModes) NUM_KEY_MODES;
 };
 
@@ -298,17 +651,28 @@ void handleKeyDown ( int keyNumber) {
     Log.trace("Key " + String( keyNumber) + String( "down"));
     switch (keyMode) {
     case keyModeOnOff:
-        trellis.setPixelColor( keyNumber, Wheel(map( keyNumber, 0, X_DIM * Y_DIM, 0, 255))); //on rising
-        publish ( String( NODE_NAME) + String( "/key/") + String( keyNumber),  String( "On"));
+        trellis.setPixelColor(keyNumber, ledColor);
+        trellis.show();
+        //ledColors[ keyNumber] = ledColor;
+        publish ( "key/" + String( keyNumber),  "On");
         break;
 
     case keyModeOnOnly:
-        trellis.setPixelColor( keyNumber, Wheel(map( keyNumber, 0, X_DIM * Y_DIM, 0, 255))); //on rising
-        publish ( String( NODE_NAME) + String( "/key/") + String( keyNumber),  String( "On"));
+        //ledColors[ keyNumber] = ledColor;
+        trellis.setPixelColor(keyNumber, ledColor);
+        trellis.show();
+        publish ( String( "key/") + String( keyNumber),  String( "On"));
         break;
 
     case keyModeLocalMatrix:
-        trellis.setPixelColor( keyNumber, Wheel(map( keyNumber, 0, X_DIM * Y_DIM, 0, 255))); //on rising
+        trellis.setPixelColor(keyNumber, ledColor);
+        trellis.show();
+        matrixB [ keyNumber] = !matrixB[ keyNumber]; // toggle the bit in matrix
+        if (matrixB [ keyNumber]) {
+            ledColors[ keyNumber] = ledColor; // LED on
+        } else {
+            ledColors[ keyNumber] = 0; // LED off
+        }
         break;
 
     default:
@@ -319,17 +683,27 @@ void handleKeyDown ( int keyNumber) {
 void handleKeyUp ( int keyNumber) {
     switch (keyMode) {
     case keyModeOnOff:
+        trellis.setPixelColor(keyNumber, 0);
+        trellis.show();
         Log.trace("Key " + String( keyNumber) + String( "up"));
-        trellis.setPixelColor( keyNumber, 0); //off falling
-        publish ( String( NODE_NAME) + String( "/key/") + String( keyNumber),  String( "Off"));
+        //ledColors[ keyNumber] = 0;
+        publish ( String( "/key/") + String( keyNumber),  String( "Off"));
         break;
 
     case keyModeOnOnly:
-        trellis.setPixelColor( keyNumber, 0); //off falling
+        trellis.setPixelColor(keyNumber, 0);
+        trellis.show();
+        //ledColors[ keyNumber] = 0;
         break;
 
     case keyModeLocalMatrix:
-        trellis.setPixelColor( keyNumber, 0); //off falling
+        if (matrixB [ keyNumber]) {
+            trellis.setPixelColor(keyNumber, ledColor);
+            trellis.show();
+        } else {
+            trellis.setPixelColor(keyNumber, 0);
+            trellis.show();
+        }
         break;
 
     default:
@@ -346,19 +720,16 @@ TrellisCallback keypressEventCallback(keyEvent evt){
         handleKeyUp( evt.bit.NUM);
     }
 
-    trellis.show();
+    showLeds();
     return 0;
 }
 
 
 // receive MQTT message
 void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
-/*
-    int passedMode;
-    int passedBrightness;
-    int passedDirection;
-    int passedColor;
-*/
+    int temp;
+    bool overridingCommand = false;
+
     if (length > MAX_PAYLOAD_SIZE) {
         length = MAX_PAYLOAD_SIZE;
     }
@@ -379,7 +750,66 @@ void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
         index = topicS.indexOf( "/command/") + 9;
         String command = topicS.substring(index);
         if (command.compareTo( "keyMode") == 0) {
-           setKeyMode( stringToKeyMode( payloadS));
+            setKeyMode( stringToKeyMode( payloadS));
+        } else if (command.compareTo( "getMatrix") == 0) {
+            arrBoolToArrInt( matrixB, matrixI );
+            String jmatrix = arrIntToJsonString( matrixI );
+            Log.trace( "publishing matrix: " +  jmatrix);
+            publish ("matrix", jmatrix);
+        } else if (command.compareTo( "setMatrix") == 0) {
+            Log.trace( "extracting matrix: " +  payloadS);
+            jsonToIntArray( payloadS, matrixI);
+            arrIntToArrBool( matrixI, matrixB);
+            if (keyMode == keyModeLocalMatrix) {
+                loadMatrix();
+            }
+            Log.trace( "extracted matrix: " + arrToString( matrixI));
+        } else if (command.compareTo( "setBrightness") == 0) {
+            temp = payloadS.toInt();
+            if (temp <= 255) {
+                ledBrightness = temp;
+                setBrightness( ledBrightness);
+                Log.trace( "brightness set to " + String( ledBrightness));
+            } else {
+                Log.warn( "bad brightness command: " + payloadS);
+            }
+        } else if (command.compareTo( "setColor") == 0) {
+            temp = payloadS.toInt();
+            if (temp <= 0xffffff) {
+                ledColor = temp;
+                Log.trace( "color set to #" + String( ledColor, HEX));
+            } else {
+                Log.warn( "bad color command: " + payloadS);
+            }
+        } else if (command.compareTo( "allOn") == 0) {
+            allLedsOn( matrixB);
+            showLeds();
+            overridingCommand = true;
+            Log.trace( "all on");
+        } else if (command.compareTo( "allOff") == 0) {
+            allLedsOff( matrixB);
+            showLeds();
+            overridingCommand = true;
+            Log.trace( "all off");
+        } else if (command.compareTo( "ping") == 0) {
+            Log.trace( "ping");
+            sendHeartbeat();
+        } else if (command.compareTo( "lifeGen") == 0) {
+            // maybe should only do this in the matrix mode...
+            Log.trace( "lifeGen");
+            generation( matrixB); // updates bool matrix
+            loadMatrix();
+        } else {
+            Log.warn( "bad command: " + command);
+        }
+
+        if (!overridingCommand) {
+            if (keyMode == keyModeLocalMatrix) {
+                updateLedMatrix();
+            } else {
+                allLedsOff( matrixB);
+            }
+            showLeds();
         }
     }
 
@@ -393,35 +823,14 @@ void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
         } else {
             Log.warn( "Mode payload was bad: " + payloadS);
         }
-    } else if (topicS.compareTo( String( NODE_NAME) + String ("/command/brightness")) == 0) {
-        // payload expected to be 0..100 (percent)
-        passedBrightness = payloadS.toInt();
-        if (passedBrightness > 0 && passedBrightness <= 100) {
-            //FastLED.setBrightness( (int) (passedBrightness*255/100));
-            Log.trace( "Brightness set to: " + String( passedBrightness, DEC) + String("%"));
-        } else {
-            Log.warn( "Brightness payload was bad: " + payloadS);
-        }
     } else if (topicS.compareTo( String( NODE_NAME) + String ("/command/direction")) == 0) {
         // payload expected to be 0..359 (degrees)
         passedDirection = payloadS.toInt();
         if (passedDirection > 0 && passedDirection <= 360) {
             ledDirection = passedDirection;
-            Log.trace( "Direction set to: " + String( passedDirection, DEC) + String("%"));
+            *Log.trace( "Direction set to: " + String( passedDirection, DEC) + String("%"));
         } else {
             Log.warn( "Direction payload was bad: " + payloadS);
-        }
-    } else if (topicS.compareTo( String( NODE_NAME) + String ("/command/color")) == 0) {
-        // payload expected to be some sort of HTML color in the form:
-        // index into a box of crayons
-        // 0xFFFFFF, 0xFFF, names, hue angles, lists, etc., can come later
-        // want a multi color, but that may be the same thing as a list
-        passedColor = payloadS.toInt();
-        if (passedColor > 0 && passedColor <= (int)(sizeof( colors)/sizeof(int))) {
-            ledColor = passedColor;
-            Log.trace( "Set color " + String( passedColor, DEC) + " " + colors [ passedColor]);
-        } else {
-            Log.warn( "Color payload was bad: " + payloadS);
         }
     }
 */
@@ -429,9 +838,17 @@ void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
 
 
 void publish (String topic, String payload) {
-#define BUFFER_LEN 30
+// this prepends the node name to the topic
+#define BUFFER_LEN 100
+//                    buffer need to hold array of 16 3-digit numbers
+//                    [000, 000, 000 ... 000]
     char topicBuffer[BUFFER_LEN];
     char payloadBuffer[BUFFER_LEN];
+
+    if (!mqttClient.isConnected()) {
+       Log.trace( "MQTT disconnected to publish " + topic + String( ": ") + payload);
+    }
+    topic = String( NODE_NAME) + String( "/") + topic;
     topic.toCharArray(topicBuffer, BUFFER_LEN);
     payload.toCharArray(payloadBuffer, BUFFER_LEN);
     mqttClient.publish( topicBuffer, payloadBuffer);
@@ -440,8 +857,7 @@ void publish (String topic, String payload) {
 
 
 void sendHeartbeat() {
-    Log.trace( "Heart beat");
-    publish ( String( NODE_NAME) + String( "/heartbeat"),  String( ""));
+    publish ( "heartbeat",  "");
 }
 
 
@@ -474,7 +890,7 @@ when you hit it, you either stop, LED_STOP, GROUP_STOP, or loop, LED_LOOP, GROUP
 
        not sure how the scope is defined and allocated, but maybe it is with a group mechanism.
      */
-    TIME now = millis();
+    //TIME now = millis();
 
     ledMode = (ledModes) mode; // assume this works
     switch(  mode)
@@ -503,7 +919,8 @@ when you hit it, you either stop, LED_STOP, GROUP_STOP, or loop, LED_LOOP, GROUP
 
 // **** Main system routines
 
-TIME lastPublish;
+TIME lastBroadcast;
+TIME lastHeartbeat;
 SYSTEM_MODE(MANUAL);
 
 void setup() {
@@ -513,6 +930,9 @@ void setup() {
     pinMode (BUTTON_B, INPUT_PULLUP);
     pinMode (BUTTON_C, INPUT_PULLUP);
     pinMode (BUTTON_D, INPUT_PULLUP);
+    CRGB tempColor;
+
+    setBrightness( ledBrightness);
 
     Serial.begin(9600);
     //while(!Serial);
@@ -524,8 +944,9 @@ void setup() {
 
     /* the array can be addressed as x,y or with the key number */
     for(int i = 0; i < Y_DIM * X_DIM; i++){
-        trellis.setPixelColor(i, Wheel(map(i, 0, X_DIM * Y_DIM, 0, 255)));
-        //addressed with keynum
+        tempColor = Wheel(map(i, 0, X_DIM * Y_DIM, 0, 255));
+        ledColors[ i] = tempColor;
+        trellis.setPixelColor(i, tempColor);
         trellis.show();
         delay(1);
     }
@@ -536,13 +957,14 @@ void setup() {
             trellis.activateKey(x, y, SEESAW_KEYPAD_EDGE_RISING, true);
             trellis.activateKey(x, y, SEESAW_KEYPAD_EDGE_FALLING, true);
             trellis.registerCallback(x, y, keypressEventCallback);
-            trellis.setPixelColor(x, y, 0x000000); //addressed with x,y
-            trellis.show(); //show all LEDs
+            ledColors[ y * X_DIM + x] = 0;
+            trellis.setPixelColor( y * X_DIM + x, 0);
+            trellis.show();
             delay(1);
         }
     }
 
-    lastPublish = millis();
+    lastBroadcast = millis();
 }
 
 
@@ -553,6 +975,7 @@ void loop() {
             //WiFi.useDynamicIP();
             WiFi.connect();
             sendHeartbeat();
+            lastHeartbeat = millis();
         }
         if (digitalRead (BUTTON_MANUAL) == HIGH) {
             Particle.connect();
@@ -575,17 +998,22 @@ void loop() {
 
     if (digitalRead (WIFI_MANUAL) == HIGH) {
         if (mqttClient.isConnected()) {
-            mqttClient.loop();
-            if (now - lastPublish > 30 * 1000) { // only want to do this every thirty seconds
-                Log.trace(String( NODE_NAME) + String( "publishing now"));
+            mqttClient.loop(); // look for messages received, etc.
+
+            if (now - lastHeartbeat > HEARTBEAT * 1000) { // heartbeat due
+                sendHeartbeat();
+                lastHeartbeat = now;
+            }
+            if (now - lastBroadcast > BROADCAST * 1000) { // broadcast due
+                Log.trace(String( NODE_NAME) + String( "broadcast now"));
                 // or when something changes
-                publish ( String( NODE_NAME) + String( "/mode"),        String( ledMode, DEC));
-                publish ( String( NODE_NAME) + String( "/brightness"),  String( ledBrightness, DEC));
-                publish ( String( NODE_NAME) + String( "/direction"),   String( ledDirection, DEC));
-                publish ( String( NODE_NAME) + String( "/color/r"),     String( ledColor.r, DEC));
-                publish ( String( NODE_NAME) + String( "/color/g"),     String( ledColor.g, DEC));
-                publish ( String( NODE_NAME) + String( "/color/b"),     String( ledColor.b, DEC));
-                lastPublish = now;
+                publish ( String( "mode"),        String( ledMode, DEC));
+                publish ( String( "brightness"),  String( ledBrightness, DEC));
+                publish ( String( "direction"),   String( ledDirection, DEC));
+                publish ( String( "color/r"),     String( ledColor.r, DEC));
+                publish ( String( "color/g"),     String( ledColor.g, DEC));
+                publish ( String( "color/b"),     String( ledColor.b, DEC));
+                lastBroadcast = now;
             }
         } else {
             // connect to the server
