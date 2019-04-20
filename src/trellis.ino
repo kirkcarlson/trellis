@@ -49,23 +49,35 @@ add message for external switch up
 #define PARTICLE_NO_ARDUINO_COMPATIBILITY 1
 #include <MQTT.h>
 #include "addresses.h"
+#include "button.h"
+#include "encoder.h"
 #include "pixeltypes.h"
 //                      from FastLED for definition of CRGB and others
 
 
 //**** HARDWARE DEFINES ****
+#define BUTTON_A	A0
+#define BUTTON_B	A1
+#define BUTTON_C	A2
+#define BUTTON_D	A3
+#define LED_A		A4
+#define LED_B		A5
+#define LED_C		A6
+#define LED_D		A7
+
 // SDA			D0
 // SCL			D1
-#define BUTTON_A	D2
-#define BUTTON_B	D3
-#define BUTTON_C	D4
-#define BUTTON_D	D5
-#define WIFI_MANUAL	D6
+#define ROTARY1		D2 // select for encoder1
+#define ROTARY2		D3 // select for encoder2)
+#define ENCODER1A	D4
+#define ENCODER1B	D5
+#define ENCODER1SW	D6
+#define ENCODER2A	D4
+#define ENCODER2B	D5
+#define ENCODER2SW	D6
+//#define WIFI_MANUAL	D6
 #define BUTTON_MANUAL	D7
-//#define LED_A		D7
-//#define LED_B		D7
-//#define LED_C		D7
-//#define LED_D		D7
+
 
 
 //**** DEFINES ****
@@ -209,56 +221,16 @@ MQTT mqttClient(mqttServer, 1883, KEEP_ALIVE, receiveMqttMessage);
 keyModes stringToKeyMode( String str);
 
 
-//  **** CLASSES ****
 
-class Button {
-    public:
-        int8_t state = OFF;
-        int8_t pin = BUTTON_A;
-        String name = "A";
+// **** OBJECTS ****
 
-        Button ( int8_t buttonPin, String buttonName) {
-          pin = buttonPin;
-          name = buttonName;
-          pinMode (pin, INPUT_PULLUP);
-        }
+Encoder encoder1 ( ENCODER1A, ENCODER1B, ENCODER1SW, "encoder1");
+Encoder encoder2 ( ENCODER2A, ENCODER2B, ENCODER2SW, "encoder2");
 
-        void checkButton() {
-            String topic;
-
-            if (digitalRead( pin) == LOW) {
-                if (state == OFF) {
-                    delay(20); // wait to debounce button
-                    if (digitalRead (pin) == LOW) {
-                        topic = String( NODE_NAME) + String( "/") + String( name);
-                        Log.trace( topic + String( " pressed"));
-                        topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-                        mqttClient.publish( loopTopic, "pressed");
-                        state = ON;
-                    }
-                }
-            } else {
-                if (state == ON) {
-                    delay(20); // wait to debounce button
-                    if (digitalRead (pin) == HIGH) {
-                        topic = String( NODE_NAME) + String( "/") + String( name);
-                        Log.trace( topic + String( " released"));
-                        topic.toCharArray(loopTopic, MAX_TOPIC_LENGTH);
-                        mqttClient.publish( loopTopic, "released");
-                        state = OFF;
-                    }
-                }
-            }
-        }
-};
-
-
-// **** Local Objects ****
-
-Button buttonA (BUTTON_A, "buttonA");
-Button buttonB (BUTTON_B, "buttonB");
-Button buttonC (BUTTON_C, "buttonC");
-Button buttonD (BUTTON_D, "buttonD");
+Button buttonA (BUTTON_A, LED_A, "buttonA");
+Button buttonB (BUTTON_B, LED_B, "buttonB");
+Button buttonC (BUTTON_C, LED_C, "buttonC");
+Button buttonD (BUTTON_D, LED_D, "buttonD");
 
 
 // **** MQTT FUNCTIONS ****
@@ -620,6 +592,17 @@ void generation (bool currentGrid[]) {
   }
 } 
 
+
+void enableEncoder ( uint8_t pin) {
+    digitalWrite( pin, LOW);
+}
+
+
+void disableEncoder ( uint8_t pin) {
+    digitalWrite( pin, HIGH);
+}
+
+
 void setKeyMode( keyModes mode) {
     if (mode < NUM_KEY_MODES) {
         keyMode = mode;
@@ -925,11 +908,13 @@ SYSTEM_MODE(MANUAL);
 
 void setup() {
     pinMode (BUTTON_MANUAL, INPUT_PULLUP);
-    pinMode (WIFI_MANUAL, INPUT_PULLUP);
-    pinMode (BUTTON_A, INPUT_PULLUP);
-    pinMode (BUTTON_B, INPUT_PULLUP);
-    pinMode (BUTTON_C, INPUT_PULLUP);
-    pinMode (BUTTON_D, INPUT_PULLUP);
+    //pinMode (WIFI_MANUAL, INPUT_PULLUP);
+
+    pinMode( ROTARY1, OUTPUT);
+    pinMode( ROTARY2, OUTPUT);
+    disableEncoder( ROTARY1);
+    disableEncoder( ROTARY2);
+
     CRGB tempColor;
 
     setBrightness( ledBrightness);
@@ -969,7 +954,7 @@ void setup() {
 
 
 void loop() {
-    if (digitalRead (WIFI_MANUAL) == HIGH) {
+//    if (digitalRead (WIFI_MANUAL) == HIGH) {
         if (!WiFi.ready()) {
             WiFi.on();
             //WiFi.useDynamicIP();
@@ -983,20 +968,28 @@ void loop() {
         if (Particle.connected()) {
             Particle.process();
         }
-    }
+//    }
 
     TIME now = millis();
 
-    // check buttons
-    buttonA.checkButton();
-    buttonB.checkButton();
-    buttonC.checkButton();
-    buttonD.checkButton();
+    // check encoders and buttons
+    enableEncoder( ROTARY1);
+    encoder1.check( now);
+    disableEncoder( ROTARY1);
+
+    enableEncoder( ROTARY2);
+    encoder2.check( now);
+    disableEncoder( ROTARY2);
+
+    buttonA.check( now);
+    buttonB.check( now);
+    buttonC.check( now);
+    buttonD.check( now);
 
     trellis.read(); // scan the keyboard
     // do LED effects if any
 
-    if (digitalRead (WIFI_MANUAL) == HIGH) {
+//    if (digitalRead (WIFI_MANUAL) == HIGH) {
         if (mqttClient.isConnected()) {
             mqttClient.loop(); // look for messages received, etc.
 
@@ -1029,6 +1022,6 @@ void loop() {
             topic.toCharArray(subscribeTopic, TOPIC_LEN);
             mqttClient.subscribe( subscribeTopic);
         }
-    }
+//    }
     delay(20);
 }

@@ -1,6 +1,6 @@
 all: flash
 
-trellis.bin : src/trellis.ino
+trellis.bin : src/trellis.ino src/*.h src/*.cpp
 	particle compile photon . --saveTo trellis.bin
 
 flash : trellis.bin
