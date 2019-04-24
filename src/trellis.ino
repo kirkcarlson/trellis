@@ -13,12 +13,13 @@ expand on the basic MultiTrellis.
 test optional Particle.io communications
 add local only mode for Conway's life.
 test local only mode for Conway's life.
-fix problem with MQTT disconnecting when it shouldn't
+/fix problem with MQTT disconnecting when it shouldn't
 
 /add mode to send individual switch down and up
 /add mode to send individual switch down
-add mode to use switches to control local bit array
-add module for switches
+/add mode to use switches to control local bit array
+/add module for switches
+/add module for rotary encoders
 add module for lattice
 
 add command to get local bit array
@@ -33,7 +34,7 @@ add command to request ping
 /add command to request key on only
 /add command to request key use for local matrix
 
-add message to send local bit array
+add message to request local bit array
 add message to send individual switch down
 add message to send individual switch up
 add message to send brightness
@@ -59,11 +60,15 @@ add message for external switch up
 #define BUTTON_A	A0
 #define BUTTON_B	A1
 #define BUTTON_C	A2
-#define BUTTON_D	A3
+#define BUTTON_D	A0
+#define BUTTON_E	A1
+#define BUTTON_F	A2
 #define LED_A		A4
 #define LED_B		A5
 #define LED_C		A6
-#define LED_D		A7
+#define LED_D		A4
+#define LED_E		A5
+#define LED_F		A6
 
 // SDA			D0
 // SCL			D1
@@ -203,14 +208,16 @@ const int colors [] = {
 ledModes ledMode = offMode; // LED display mode, see above
 keyModes keyMode = keyModeOnOff; // key mode, see above
 int ledDirection = 0; // 0..359 LED direction in degrees for selected modes
-CRGB ledColor = CRGB::White; // default color of individual LEDs
+//CRGB ledColor = CRGB::White; // default color of individual LEDs
+uint32_t ledColor = (255<<16) | (255<<8) | 255; // default color of individual LEDs
 int ledBrightness; // level of over all brightness desired 0..255
 int ledKeypressBrightness; // level of the brightness for key presses 0..255
 int selectedGroup = 0; // currently selected group
 char loopTopic[ MAX_TOPIC_LENGTH + 1];
 bool matrixB [ X_DIM * Y_DIM];
 uint16_t matrixI [ Y_DIM];
-CRGB ledColors [X_DIM * Y_DIM];  //commanded colors are stored here
+//CRGB ledColors [X_DIM * Y_DIM];  //commanded colors are stored here
+uint32_t ledColors [X_DIM * Y_DIM];  //commanded colors are stored here
                                  // the LED is given commanded color modified by ledBrightness
 
 MQTT mqttClient(mqttServer, 1883, KEEP_ALIVE, receiveMqttMessage);
@@ -276,15 +283,24 @@ void setBrightness( uint8_t bright) {
 
 void showLeds () {
     // show all LEDs using commanded color modified by ledBrightness
-    CRGB temp;
+    //CRGB temp;
+    uint32_t temp;
 
     for (int i=0; i < X_DIM * Y_DIM; i++) {
         temp = ledColors[ i];
+/*
         if (ledBrightness) {
             temp.r = (temp.r * ledBrightness) >> 8;
             temp.g = (temp.g * ledBrightness) >> 8;
             temp.b = (temp.b * ledBrightness) >> 8;
         }
+*/
+        if (ledBrightness) {
+            temp = ( ((((((temp >> 16) & 0xFF) * ledBrightness) >> 8) & 0xFF) << 16) |
+                     ((((((temp >>  8) & 0xFF) * ledBrightness) >> 8) & 0xFF) <<  8) |
+                      (((((temp      ) & 0xFF) * ledBrightness) >> 8) & 0xFF) );
+        }
+
         trellis.setPixelColor(i, temp);
     }
     trellis.show();
@@ -292,20 +308,28 @@ void showLeds () {
 
 
 void loadMatrix ( ) {
+/*
     CRGB temp = ledColor;
     if (ledBrightness) {
         temp.r = (temp.r * ledBrightness) >> 8;
         temp.g = (temp.g * ledBrightness) >> 8;
         temp.b = (temp.b * ledBrightness) >> 8;
     }
+*/
+    uint32_t temp = ledColor;
+    if (ledBrightness) {
+         temp = ( ((((((temp >> 16) & 0xFF) * ledBrightness) >> 8) & 0xFF) << 16) |
+                  ((((((temp >>  8) & 0xFF) * ledBrightness) >> 8) & 0xFF) <<  8) |
+                   (((((temp      ) & 0xFF) * ledBrightness) >> 8) & 0xFF) );
+    }
 
     for (int i=0; i < X_DIM * Y_DIM; i++) {
         if (matrixB[i]) {
             ledColors[i] = ledColor;
-            trellis.setPixelColor(i, (uint32_t) temp);
+            trellis.setPixelColor(i, temp);
         } else {
             ledColors[i] = 0;
-            trellis.setPixelColor(i, (uint32_t) 0);
+            trellis.setPixelColor(i, 0);
         }
         //Log.trace( " " + String (i) + " " + String( matrixB[i] ? 1 : 0));
         //delay(20);
@@ -322,8 +346,14 @@ void arrBoolToArrInt ( bool arrB[], uint16_t arrI[]) {
     for (int i=0; i < Y_DIM; i++) {
         int row = 0;
         for (int j=0; j < X_DIM; j++) {
-            row = (row << 1) +  arrB[i * X_DIM + j] ? 1 : 0;
+            //Log.trace ("aB2aI j" + String(j) + String (" ") + String( arrB[ i * X_DIM + j]));
+            if (arrB[i * X_DIM + j]) {
+                row = (row << 1) | 1;
+            } else {
+                row = (row << 1);
+            }
         }
+        //Log.trace ("aB2aI row i " + String(i) + String (" ") + String(row, HEX));
         arrI[i] = row;
     }
 }
@@ -611,7 +641,6 @@ void setKeyMode( keyModes mode) {
         Log.trace( "Setting keyMode to keyModeLocalMatrix");
         arrIntToArrBool( matrixI, matrixB);
         loadMatrix();
-        Log.trace( "Set keyMode to keyModeLocalMatrix");
     } else {
         allLedsOff( matrixB);
         showLeds();
@@ -631,20 +660,20 @@ keyModes stringToKeyMode( String cmdString) {
 
 
 void handleKeyDown ( int keyNumber) {
-    Log.trace("Key " + String( keyNumber) + String( "down"));
+    Log.trace("Key " + String( keyNumber) + String( " down"));
     switch (keyMode) {
     case keyModeOnOff:
         trellis.setPixelColor(keyNumber, ledColor);
         trellis.show();
         //ledColors[ keyNumber] = ledColor;
-        publish ( "key/" + String( keyNumber),  "On");
+        publish ( "key/" + String( keyNumber),  String("1"));
         break;
 
     case keyModeOnOnly:
         //ledColors[ keyNumber] = ledColor;
         trellis.setPixelColor(keyNumber, ledColor);
         trellis.show();
-        publish ( String( "key/") + String( keyNumber),  String( "On"));
+        publish ( String( "key/") + String( keyNumber), String("1"));
         break;
 
     case keyModeLocalMatrix:
@@ -668,9 +697,9 @@ void handleKeyUp ( int keyNumber) {
     case keyModeOnOff:
         trellis.setPixelColor(keyNumber, 0);
         trellis.show();
-        Log.trace("Key " + String( keyNumber) + String( "up"));
+        Log.trace("Key " + String( keyNumber) + String( " up"));
         //ledColors[ keyNumber] = 0;
-        publish ( String( "/key/") + String( keyNumber),  String( "Off"));
+        publish ( String( "/key/") + String( keyNumber),  String("0"));
         break;
 
     case keyModeOnOnly:
@@ -735,32 +764,42 @@ void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
         if (command.compareTo( "keyMode") == 0) {
             setKeyMode( stringToKeyMode( payloadS));
         } else if (command.compareTo( "getMatrix") == 0) {
+            //String bmatrix = arrIntToJsonString( matrixI );
+            //Log.trace( "publishing boolmatrix: " +  bmatrix);
             arrBoolToArrInt( matrixB, matrixI );
             String jmatrix = arrIntToJsonString( matrixI );
-            Log.trace( "publishing matrix: " +  jmatrix);
+            //Log.trace( "publishing matrix: " +  jmatrix);
             publish ("matrix", jmatrix);
         } else if (command.compareTo( "setMatrix") == 0) {
-            Log.trace( "extracting matrix: " +  payloadS);
+            //Log.trace( "extracting matrix: " +  payloadS);
             jsonToIntArray( payloadS, matrixI);
             arrIntToArrBool( matrixI, matrixB);
             if (keyMode == keyModeLocalMatrix) {
                 loadMatrix();
             }
-            Log.trace( "extracted matrix: " + arrToString( matrixI));
+            //Log.trace( "extracted matrix: " + arrToString( matrixI));
         } else if (command.compareTo( "setBrightness") == 0) {
             temp = payloadS.toInt();
             if (temp <= 255) {
                 ledBrightness = temp;
                 setBrightness( ledBrightness);
-                Log.trace( "brightness set to " + String( ledBrightness));
+                //Log.trace( "brightness set to " + String( ledBrightness));
+                //change brightness immediately
+                updateLedMatrix();
             } else {
                 Log.warn( "bad brightness command: " + payloadS);
             }
         } else if (command.compareTo( "setColor") == 0) {
-            temp = payloadS.toInt();
-            if (temp <= 0xffffff) {
-                ledColor = temp;
-                Log.trace( "color set to #" + String( ledColor, HEX));
+            uint32_t tempColor = payloadS.toInt();
+            //Log.trace( "color payload is #" + String( tempColor, HEX));
+            if (tempColor <= 0xffffff) {
+                //Log.trace( "color payload is #" + String( tempColor, HEX));
+                //Log.trace( "color payload is #" + String( (CRGB) tempColor, HEX));
+                ledColor = tempColor;
+                //Log.trace( "ledColor set to " + String( ledColor));
+                //Log.trace( "ledColor set to #" + String( ledColor, HEX));
+                // change color immediately
+                updateLedMatrix();
             } else {
                 Log.warn( "bad color command: " + payloadS);
             }
@@ -782,6 +821,17 @@ void receiveMqttMessage(char* topic, byte* payload, unsigned int length) {
             Log.trace( "lifeGen");
             generation( matrixB); // updates bool matrix
             loadMatrix();
+        } else if (command.compareTo( "LED/") == 0) {
+            // need to look for trailing LED number and separately payload = color
+            Log.trace( "LED");
+            uint16_t ledNumber = payloadS.toInt();
+            if (ledNumber <  Y_DIM * X_DIM){
+                ledColors[ ledNumber] = ledColor;
+                trellis.setPixelColor( ledNumber, (uint32_t) ledColor);
+                Log.trace( "LED " + String( ledNumber) + "  color set to #" + String( (int)ledColor, HEX));
+            } else {
+                Log.warn( "bad LED command: " + payloadS);
+            }
         } else {
             Log.warn( "bad command: " + command);
         }
@@ -915,7 +965,8 @@ void setup() {
     disableEncoder( ROTARY1);
     disableEncoder( ROTARY2);
 
-    CRGB tempColor;
+    //CRGB tempColor;
+    uint32_t tempColor;
 
     setBrightness( ledBrightness);
 
@@ -1003,9 +1054,9 @@ void loop() {
                 publish ( String( "mode"),        String( ledMode, DEC));
                 publish ( String( "brightness"),  String( ledBrightness, DEC));
                 publish ( String( "direction"),   String( ledDirection, DEC));
-                publish ( String( "color/r"),     String( ledColor.r, DEC));
-                publish ( String( "color/g"),     String( ledColor.g, DEC));
-                publish ( String( "color/b"),     String( ledColor.b, DEC));
+                //publish ( String( "color/r"),     String( ledColor.r, DEC));
+                //publish ( String( "color/g"),     String( ledColor.g, DEC));
+                //publish ( String( "color/b"),     String( ledColor.b, DEC));
                 lastBroadcast = now;
             }
         } else {
